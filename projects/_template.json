@@ -1,0 +1,13 @@
+{
+  "name": "",
+  "app_id": "",
+  "bundle_id": "",
+  "group_id": "",
+  "base_territory": "USA",
+  "price_scope": "all",
+  "family_sharable": false,
+  "available_in_all_territories": true,
+  "review_note": "",
+  "default_localizations": [],
+  "subscriptions": []
+}

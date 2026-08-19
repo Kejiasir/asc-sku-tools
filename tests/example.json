@@ -1,0 +1,66 @@
+{
+  "group_id": "22115962",
+  "base_territory": "USA",
+  "price_scope": "usa",
+  "family_sharable": false,
+  "available_in_all_territories": true,
+  "review_note": "VIP auto-renewable subscription SKU.",
+  "default_localizations": [
+    {
+      "locale": "en-US",
+      "name": "VIP Membership",
+      "description": "Unlock all premium short dramas."
+    },
+    {
+      "locale": "zh-Hans",
+      "name": "VIP 会员",
+      "description": "解锁全部短剧内容。"
+    }
+  ],
+  "subscriptions": [
+    {
+      "product_id": "dj.month.1.0",
+      "reference_name": "vip-month-1.0-无试用",
+      "period": "ONE_MONTH",
+      "group_level": 5,
+      "usd_price": "19.99"
+    },
+    {
+      "product_id": "dj.month.1.1",
+      "reference_name": "vip-month-1.1-前三天免费",
+      "period": "ONE_MONTH",
+      "group_level": 6,
+      "usd_price": "19.99",
+      "intro": {
+        "mode": "FREE_TRIAL",
+        "duration": "THREE_DAYS",
+        "number_of_periods": 1
+      }
+    },
+    {
+      "product_id": "dj.month.1.2",
+      "reference_name": "vip-month-1.2-首周折扣",
+      "period": "ONE_MONTH",
+      "group_level": 7,
+      "usd_price": "19.99",
+      "intro": {
+        "mode": "PAY_AS_YOU_GO",
+        "duration": "ONE_WEEK",
+        "number_of_periods": 1,
+        "usd_price": "4.99"
+      }
+    },
+    {
+      "product_id": "dj.month.1.3",
+      "reference_name": "vip-month-1.3-首周免费",
+      "period": "ONE_MONTH",
+      "group_level": 8,
+      "usd_price": "19.99",
+      "intro": {
+        "mode": "FREE_TRIAL",
+        "duration": "ONE_WEEK",
+        "number_of_periods": 1
+      }
+    }
+  ]
+}

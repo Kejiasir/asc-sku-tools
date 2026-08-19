@@ -1,0 +1,19 @@
+#!/bin/bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+export TK_SILENCE_DEPRECATION=1
+cd "$ROOT"
+
+PYTHON="$ROOT/.venv/bin/python"
+if [[ ! -x "$PYTHON" ]]; then
+  PYTHON="$(command -v python3 || true)"
+fi
+if [[ -z "${PYTHON}" ]]; then
+  osascript -e 'display dialog "找不到 Python。请先在项目目录创建 .venv。" buttons {"好"} default button 1 with title "ASC SKU"'
+  exit 1
+fi
+if ! "$PYTHON" -c "import customtkinter" 2>/dev/null; then
+  osascript -e 'display dialog "缺少界面依赖。请运行：\n.venv/bin/pip install -r requirements.txt" buttons {"好"} default button 1 with title "ASC SKU"'
+  exit 1
+fi
+exec "$PYTHON" "$ROOT/create_subscriptions.py"

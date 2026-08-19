@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -248,6 +249,16 @@ class AuthDiscoveryTests(unittest.TestCase):
             self.assertIn("ASC_ISSUER_ID=issuer-id", env_text)
             self.assertIn("ASC_KEY_ID=ABC12DEF34", env_text)
             self.assertNotIn("placeholder", env_text)
+
+
+class VersionBumpTests(unittest.TestCase):
+    def test_carry_at_nine(self) -> None:
+        sys.path.insert(0, str(Path(__file__).parent / "scripts"))
+        from next_version import bump
+
+        self.assertEqual(bump("1.0.0"), "1.0.1")
+        self.assertEqual(bump("1.0.9"), "1.1.0")
+        self.assertEqual(bump("1.9.9"), "2.0.0")
 
 
 if __name__ == "__main__":

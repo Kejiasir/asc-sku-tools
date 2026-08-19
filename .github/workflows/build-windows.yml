@@ -1,14 +1,31 @@
-name: Build Windows
+name: Release
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
-    tags:
-      - "v*"
+
+permissions:
+  contents: write
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Next version
+        id: next
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="$(python3 scripts/next_version.py)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Publishing $VERSION"
+
   windows:
+    needs: version
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,12 +42,91 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 
-      - name: Build portable app and installer
+      - name: Build Windows app
+        env:
+          APP_VERSION: ${{ needs.version.outputs.version }}
         run: python build_app.py
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ASC-SKU-windows
+          name: windows
+          if-no-files-found: error
           path: |
             dist/ASC-SKU-windows.zip
-            dist/ASC-SKU-Setup.exe
+            dist/ASC-SKU-Setup-*.exe
+
+  macos:
+    needs: version
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python with Tk
+        run: |
+          brew install python@3.12 python-tk@3.12
+          echo "$(brew --prefix python@3.12)/bin" >> "$GITHUB_PATH"
+
+      - name: Install dependencies
+        run: |
+          python3.12 -m pip install --upgrade pip
+          python3.12 -m pip install -r requirements.txt pyinstaller
+          python3.12 -c "import tkinter; print('tkinter', tkinter.TkVersion)"
+
+      - name: Build macOS app
+        env:
+          APP_VERSION: ${{ needs.version.outputs.version }}
+        run: python3.12 build_app.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/ASC-SKU-macos.zip
+
+  release:
+    needs: [version, windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          mkdir -p dist
+          find artifacts -type f -print
+          shopt -s nullglob
+          for file in artifacts/windows/ASC-SKU-Setup*.exe; do
+            cp "$file" "dist/ASC-SKU-Setup-${VERSION}.exe"
+          done
+          for file in artifacts/windows/ASC-SKU-windows.zip; do
+            cp "$file" "dist/ASC-SKU-windows-${VERSION}.zip"
+          done
+          for file in artifacts/macos/ASC-SKU-macos.zip; do
+            cp "$file" "dist/ASC-SKU-macos-${VERSION}.zip"
+          done
+          ls -la dist
+          test -f "dist/ASC-SKU-Setup-${VERSION}.exe"
+          test -f "dist/ASC-SKU-windows-${VERSION}.zip"
+          test -f "dist/ASC-SKU-macos-${VERSION}.zip"
+          gh release create "v${VERSION}" \
+            --title "ASC SKU ${VERSION}" \
+            --notes "$(cat <<EOF
+          ## ASC SKU ${VERSION}
+
+          从本页 Assets 下载安装包。不要把 AuthKey_*.p8 或 .env 提交到仓库。
+
+          - **Windows 安装包:** \`ASC-SKU-Setup-${VERSION}.exe\`
+          - **Windows 绿色版:** \`ASC-SKU-windows-${VERSION}.zip\`
+          - **macOS:** \`ASC-SKU-macos-${VERSION}.zip\`（解压后打开 \`ASC SKU.app\`）
+
+          首次启动请填写 App Store Connect 的 Issuer ID、Key ID 和 .p8。
+          EOF
+          )" \
+            dist/ASC-SKU-Setup-"${VERSION}".exe \
+            dist/ASC-SKU-windows-"${VERSION}".zip \
+            dist/ASC-SKU-macos-"${VERSION}".zip

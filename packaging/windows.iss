@@ -1,5 +1,7 @@
-#define MyAppName "ASC SKU"
+#ifndef MyAppVersion
 #define MyAppVersion "1.0.0"
+#endif
+#define MyAppName "ASC SKU"
 #define MyAppPublisher "ShuGe"
 
 [Setup]
@@ -11,7 +13,7 @@ DefaultDirName={localappdata}\Programs\ASC SKU
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=..\dist
-OutputBaseFilename=ASC-SKU-Setup
+OutputBaseFilename=ASC-SKU-Setup-{#MyAppVersion}
 SetupIconFile=..\assets\icon.ico
 Compression=lzma2
 SolidCompression=yes

@@ -68,18 +68,20 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python3.12 -m pip install --upgrade pip
-          python3.12 -m pip install -r requirements.txt pyinstaller
-          python3.12 -c "import tkinter; print('tkinter', tkinter.TkVersion)"
+          python3.12 -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/pip install -r requirements.txt pyinstaller
+          .venv/bin/python -c "import tkinter; print('tkinter', tkinter.TkVersion)"
 
       - name: Build macOS app
         env:
           APP_VERSION: ${{ needs.version.outputs.version }}
-        run: python3.12 build_app.py
+        run: .venv/bin/python build_app.py
 
       - uses: actions/upload-artifact@v4
         with:
           name: macos
+          if-no-files-found: error
           path: dist/ASC-SKU-macos.zip
 
   release:

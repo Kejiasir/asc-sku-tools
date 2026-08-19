@@ -11,7 +11,10 @@ AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 DefaultDirName={localappdata}\Programs\ASC SKU
 DefaultGroupName={#MyAppName}
+DisableDirPage=yes
 DisableProgramGroupPage=yes
+UsePreviousAppDir=no
+CloseApplications=force
 OutputDir=..\dist
 OutputBaseFilename=ASC-SKU-Setup-{#MyAppVersion}
 SetupIconFile=..\assets\icon.ico
@@ -26,7 +29,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
-Source: "..\dist\ASC SKU\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\ASC SKU\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs overwritereadonly uninsremovereadonly
 
 [Icons]
 Name: "{userdesktop}\{#MyAppName}"; Filename: "{app}\ASC SKU.exe"

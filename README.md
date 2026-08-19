@@ -10,9 +10,11 @@
 
 https://github.com/Kejiasir/asc-sku-tools/releases
 
+- Windows **绿色版（推荐）**：`ASC-SKU-windows-x.y.z.zip`
 - Windows 安装包：`ASC-SKU-Setup-x.y.z.exe`
-- Windows 绿色版：`ASC-SKU-windows-x.y.z.zip`
 - macOS：`ASC-SKU-macos-x.y.z.zip`（解压后打开 `ASC SKU.app`）
+
+Windows 同事若安装包报「拒绝访问 / MoveFile code 5」，改用绿色版：把 zip 解压到桌面或「文档」，保留整个文件夹，双击其中的 `ASC SKU.exe`。不要只拷贝 exe，也不要解压/安装到 `E:\ASC SKU` 这类盘符根目录。若杀毒软件拦截，把该文件夹加入白名单。
 
 首次启动填写 Issuer ID、Key ID 和 `.p8`。Windows 凭证存在 `%APPDATA%\ASC SKU\`，macOS 存在 `~/Library/Application Support/ASC SKU/`。
 

@@ -17,6 +17,7 @@ hardcoded in the engine.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -129,6 +130,8 @@ class SubscriptionSKU:
     intro: IntroOffer | None = None
     localizations: tuple[Localization, ...] = ()
     review_note: str | None = None
+    state: str | None = None
+    review_screenshot: str | None = None
 
 
 @dataclass(frozen=True)
@@ -291,6 +294,7 @@ def sku_from_dict(raw: dict[str, Any], defaults: tuple[Localization, ...], revie
     group_level = raw.get("group_level")
     period = normalize_period(str(raw.get("period", "")))
     intro = coerce_paid_intro_duration(period, intro_from_dict(raw.get("intro")))
+    state = str(raw.get("state") or "").strip() or None
     return SubscriptionSKU(
         product_id=product_id,
         reference_name=reference_name,
@@ -300,6 +304,8 @@ def sku_from_dict(raw: dict[str, Any], defaults: tuple[Localization, ...], revie
         intro=intro,
         localizations=localizations,
         review_note=str(raw["review_note"]).strip() if raw.get("review_note") else review_note,
+        state=state,
+        review_screenshot=str(raw.get("review_screenshot") or "").strip() or None,
     )
 
 
@@ -369,6 +375,10 @@ def sku_to_dict(
         payload["group_level"] = sku.group_level
     if sku.review_note:
         payload["review_note"] = sku.review_note
+    if sku.state:
+        payload["state"] = sku.state
+    if sku.review_screenshot:
+        payload["review_screenshot"] = sku.review_screenshot
     if sku.intro is not None:
         payload["intro"] = intro_to_dict(sku.intro)
     if sku.localizations and sku.localizations != (defaults or ()):
@@ -475,6 +485,51 @@ def subscription_create_payload(sku: SubscriptionSKU, group_id: str, catalog: Ca
             "relationships": {
                 "group": {"data": {"type": "subscriptionGroups", "id": group_id}}
             },
+        }
+    }
+
+
+SCREENSHOT_SUFFIXES = {".png", ".jpg", ".jpeg"}
+
+
+def file_md5(data: bytes) -> str:
+    return hashlib.md5(data, usedforsecurity=False).hexdigest()
+
+
+def store_review_screenshot(product_id: str, source: str, *, directory: Path | None = None) -> str:
+    path = Path(source).expanduser()
+    if not path.is_file():
+        raise ASCError(f"Review screenshot not found: {path}")
+    suffix = path.suffix.lower()
+    if suffix not in SCREENSHOT_SUFFIXES:
+        raise ASCError("Review screenshot must be a PNG or JPEG file.")
+    safe_id = re.sub(r"[^A-Za-z0-9._-]", "_", product_id)
+    dest_dir = (directory or data_dir()) / "screenshots"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"{safe_id}{suffix}"
+    if path.resolve() != dest.resolve():
+        shutil.copy2(path, dest)
+    return str(dest)
+
+
+def review_screenshot_reserve_payload(sku_id: str, file_name: str, file_size: int) -> dict[str, Any]:
+    return {
+        "data": {
+            "type": "subscriptionAppStoreReviewScreenshots",
+            "attributes": {"fileName": file_name, "fileSize": file_size},
+            "relationships": {
+                "subscription": {"data": {"type": "subscriptions", "id": sku_id}}
+            },
+        }
+    }
+
+
+def review_screenshot_commit_payload(screenshot_id: str, checksum: str) -> dict[str, Any]:
+    return {
+        "data": {
+            "type": "subscriptionAppStoreReviewScreenshots",
+            "id": screenshot_id,
+            "attributes": {"uploaded": True, "sourceFileChecksum": checksum},
         }
     }
 
@@ -783,8 +838,44 @@ class ASCClient:
     def post(self, path: str, json_body: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", path, json_body=json_body)
 
+    def patch(self, path: str, json_body: dict[str, Any]) -> dict[str, Any]:
+        return self._request("PATCH", path, json_body=json_body)
+
+    def upload_asset(self, operation: dict[str, Any], payload: bytes) -> None:
+        url = str(operation.get("url") or "")
+        host = urlparse(url).netloc
+        if not host.endswith("blobstore.apple.com"):
+            raise ASCError(f"Refusing to upload to unexpected host: {host}")
+        headers = {
+            str(item.get("name")): str(item.get("value"))
+            for item in operation.get("requestHeaders") or []
+            if item.get("name")
+        }
+        response = self._session.request(
+            str(operation.get("method") or "PUT"),
+            url,
+            headers=headers,
+            data=payload,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+        if response.status_code >= 400:
+            raise ASCError(
+                f"Asset upload failed with HTTP {response.status_code}",
+                status_code=response.status_code,
+                body=response.text,
+            )
+
     def paginate(self, path: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        items, _included = self.paginate_with_included(path, params)
+        return items
+
+    def paginate_with_included(
+        self,
+        path: str,
+        params: dict[str, Any] | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
         items: list[dict[str, Any]] = []
+        included: dict[str, dict[str, Any]] = {}
         next_path: str | None = path
         next_params = params
         while next_path:
@@ -794,10 +885,14 @@ class ASCClient:
                 items.extend(chunk)
             elif isinstance(chunk, dict):
                 items.append(chunk)
+            for item in payload.get("included") or []:
+                item_id = item.get("id")
+                if item_id:
+                    included[str(item_id)] = item
             next_url = (payload.get("links") or {}).get("next")
-            next_path = next_url
+            next_path = next_url if next_url else None
             next_params = None
-        return items
+        return items, included
 
 
 def format_errors(error: ASCError) -> str:
@@ -844,19 +939,211 @@ def fetch_groups(client: ASCClient, app_id: str) -> list[dict[str, str]]:
     ]
 
 
-def fetch_skus(client: ASCClient, group_id: str) -> list[dict[str, str]]:
-    items = client.paginate(f"/v1/subscriptionGroups/{group_id}/subscriptions", {"limit": 200})
-    rows = [
+def _relationship_id(resource: dict[str, Any], name: str) -> str:
+    related = ((resource.get("relationships") or {}).get(name) or {}).get("data") or {}
+    if isinstance(related, list):
+        related = related[0] if related else {}
+    return str(related.get("id") or "")
+
+
+def _included_customer_price(included: dict[str, dict[str, Any]], point_id: str) -> str:
+    if not point_id:
+        return ""
+    point = included.get(point_id) or {}
+    return str((point.get("attributes") or {}).get("customerPrice") or "").strip()
+
+
+def _is_current_schedule(attrs: dict[str, Any], *, today: str) -> bool:
+    start = str(attrs.get("startDate") or "")[:10]
+    end = str(attrs.get("endDate") or "")[:10]
+    if start and start > today:
+        return False
+    if end and end < today:
+        return False
+    return True
+
+
+def current_usa_customer_price(
+    prices: list[dict[str, Any]],
+    included: dict[str, dict[str, Any]],
+    *,
+    territory: str = "USA",
+    today: str | None = None,
+) -> str | None:
+    current_day = today or date.today().isoformat()
+    candidates: list[tuple[str, str]] = []
+    for price in prices:
+        attrs = price.get("attributes") or {}
+        if not _is_current_schedule(attrs, today=current_day):
+            continue
+        territory_id = _relationship_id(price, "territory")
+        if territory_id and territory_id != territory:
+            continue
+        customer = _included_customer_price(included, _relationship_id(price, "subscriptionPricePoint"))
+        if not customer:
+            customer = str(attrs.get("customerPrice") or "").strip()
+        if customer:
+            candidates.append((str(attrs.get("startDate") or ""), customer))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0])
+    return candidates[-1][1]
+
+
+def current_usa_intro(
+    offers: list[dict[str, Any]],
+    included: dict[str, dict[str, Any]],
+    *,
+    territory: str = "USA",
+    today: str | None = None,
+) -> dict[str, Any] | None:
+    current_day = today or date.today().isoformat()
+    for offer in offers:
+        attrs = offer.get("attributes") or {}
+        if not _is_current_schedule(attrs, today=current_day):
+            continue
+        territory_id = _relationship_id(offer, "territory")
+        if territory_id and territory_id != territory:
+            continue
+        mode = str(attrs.get("offerMode") or "").strip().upper()
+        duration = str(attrs.get("duration") or "").strip().upper()
+        if mode not in INTRO_MODES or duration not in INTRO_DURATIONS:
+            continue
+        periods = int(attrs.get("numberOfPeriods") or 1)
+        intro: dict[str, Any] = {
+            "mode": mode,
+            "duration": duration,
+            "number_of_periods": max(periods, 1),
+        }
+        customer = _included_customer_price(included, _relationship_id(offer, "subscriptionPricePoint"))
+        if customer:
+            intro["usd_price"] = customer
+        elif mode in {"PAY_AS_YOU_GO", "PAY_UP_FRONT"}:
+            continue
+        return intro
+    return None
+
+
+def fetch_subscription_pricing(
+    client: ASCClient,
+    subscription_id: str,
+    *,
+    territory: str = "USA",
+) -> tuple[str | None, dict[str, Any] | None]:
+    prices, price_included = _paginate_related(
+        client,
+        f"/v1/subscriptions/{subscription_id}/prices",
         {
-            "level": str((item.get("attributes") or {}).get("groupLevel", "")),
-            "name": str((item.get("attributes") or {}).get("name", "")),
-            "product": str((item.get("attributes") or {}).get("productId", "")),
-            "period": str((item.get("attributes") or {}).get("subscriptionPeriod", "")),
-            "state": str((item.get("attributes") or {}).get("state", "")),
+            "filter[territory]": territory,
+            "include": "subscriptionPricePoint,territory",
+            "limit": 50,
+        },
+    )
+    usd_price = current_usa_customer_price(prices, price_included, territory=territory)
+    if not usd_price:
+        try:
+            prices, price_included = _paginate_related(
+                client,
+                f"/v1/subscriptions/{subscription_id}/prices",
+                {
+                    "filter[territory]": territory,
+                    "filter[planType]": "UPFRONT",
+                    "include": "subscriptionPricePoint,territory",
+                    "limit": 50,
+                },
+            )
+            usd_price = current_usa_customer_price(prices, price_included, territory=territory)
+        except ASCError:
+            pass
+    offers, offer_included = _paginate_related(
+        client,
+        f"/v1/subscriptions/{subscription_id}/introductoryOffers",
+        {
+            "filter[territory]": territory,
+            "include": "subscriptionPricePoint,territory",
+            "limit": 50,
+        },
+    )
+    intro = current_usa_intro(offers, offer_included, territory=territory)
+    return usd_price, intro
+
+
+def _paginate_related(
+    client: ASCClient,
+    path: str,
+    params: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    try:
+        return client.paginate_with_included(path, params)
+    except ASCError as error:
+        if error.status_code != 400 or "filter[territory]" not in params:
+            raise
+        fallback = {key: value for key, value in params.items() if key != "filter[territory]"}
+        return client.paginate_with_included(path, fallback)
+
+
+def sku_dict_from_asc_row(row: dict[str, Any]) -> dict[str, Any]:
+    sku: dict[str, Any] = {
+        "product_id": row["product"],
+        "reference_name": row["name"],
+        "period": row["period"],
+        "usd_price": "",
+        "state": row.get("state") or "",
+    }
+    if row.get("level") not in (None, ""):
+        sku["group_level"] = int(row["level"])
+    pricing = row.get("pricing")
+    if isinstance(pricing, dict):
+        sku["usd_price"] = str(pricing.get("usd_price") or "")
+        if pricing.get("intro"):
+            sku["intro"] = pricing["intro"]
+    return sku
+
+
+def merge_local_sku_with_asc(local: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
+    updated = dict(local)
+    updated["product_id"] = row["product"]
+    updated["reference_name"] = row["name"]
+    updated["period"] = row["period"]
+    if row.get("level") not in (None, ""):
+        updated["group_level"] = int(row["level"])
+    if row.get("state"):
+        updated["state"] = row["state"]
+    pricing = row.get("pricing")
+    if isinstance(pricing, dict):
+        updated["usd_price"] = str(pricing.get("usd_price") or "")
+        if pricing.get("intro"):
+            updated["intro"] = pricing["intro"]
+        else:
+            updated.pop("intro", None)
+    return updated
+
+
+def fetch_skus(
+    client: ASCClient,
+    group_id: str,
+    *,
+    include_pricing: bool = False,
+) -> list[dict[str, Any]]:
+    items = client.paginate(f"/v1/subscriptionGroups/{group_id}/subscriptions", {"limit": 200})
+    rows: list[dict[str, Any]] = []
+    for item in items:
+        attrs = item.get("attributes") or {}
+        row: dict[str, Any] = {
+            "level": str(attrs.get("groupLevel", "")),
+            "name": str(attrs.get("name", "")),
+            "product": str(attrs.get("productId", "")),
+            "period": str(attrs.get("subscriptionPeriod", "")),
+            "state": str(attrs.get("state", "")),
             "id": item.get("id", ""),
         }
-        for item in items
-    ]
+        if include_pricing and row["id"]:
+            try:
+                usd_price, intro = fetch_subscription_pricing(client, str(row["id"]))
+                row["pricing"] = {"usd_price": usd_price or "", "intro": intro}
+            except ASCError:
+                pass
+        rows.append(row)
     rows.sort(key=lambda row: int(row["level"] or 10**9))
     return rows
 
@@ -924,6 +1211,50 @@ def add_localizations(client: ASCClient, sku_id: str, localizations: tuple[Local
             if error.status_code == 409:
                 continue
             raise
+
+
+def existing_review_screenshot_id(client: ASCClient, sku_id: str) -> str | None:
+    try:
+        payload = client.get(f"/v1/subscriptions/{sku_id}/appStoreReviewScreenshot")
+    except ASCError as error:
+        if error.status_code == 404:
+            return None
+        raise
+    data = payload.get("data")
+    if isinstance(data, dict) and data.get("id"):
+        return str(data["id"])
+    return None
+
+
+def upload_review_screenshot(client: ASCClient, sku_id: str, screenshot_path: str) -> None:
+    path = Path(screenshot_path).expanduser()
+    if not path.is_file():
+        raise ASCError(f"Review screenshot not found: {path}")
+    existing = existing_review_screenshot_id(client, sku_id)
+    if existing:
+        print(f"    screenshot: already exists, skip ({path.name})")
+        return
+    data = path.read_bytes()
+    reserved = client.post(
+        "/v1/subscriptionAppStoreReviewScreenshots",
+        review_screenshot_reserve_payload(sku_id, path.name, len(data)),
+    )
+    screenshot = reserved.get("data") or {}
+    screenshot_id = str(screenshot.get("id") or "")
+    operations = (screenshot.get("attributes") or {}).get("uploadOperations") or []
+    if not screenshot_id:
+        raise ASCError("Apple did not return a review screenshot id.")
+    if not operations:
+        raise ASCError("Apple did not return screenshot upload operations.")
+    for operation in operations:
+        offset = int(operation.get("offset") or 0)
+        length = int(operation.get("length") or len(data) - offset)
+        client.upload_asset(operation, data[offset : offset + length])
+    client.patch(
+        f"/v1/subscriptionAppStoreReviewScreenshots/{screenshot_id}",
+        review_screenshot_commit_payload(screenshot_id, file_md5(data)),
+    )
+    print(f"    screenshot: uploaded {path.name}")
 
 
 def fetch_price_points(client: ASCClient, sku_id: str, territory: str) -> list[dict[str, Any]]:
@@ -1119,6 +1450,7 @@ def create_one(
         print(
             f"  [{action}] {sku.product_id}  {sku.reference_name}  "
             f"{sku.period}  USD {sku.usd_price}  intro={intro}  prices={catalog.price_scope}"
+            + (f"  screenshot={Path(sku.review_screenshot).name}" if sku.review_screenshot else "")
         )
         return "dry-run"
 
@@ -1146,6 +1478,8 @@ def create_one(
             price_scope=catalog.price_scope,
             nearest=nearest,
         )
+    if sku.review_screenshot:
+        upload_review_screenshot(client, sku_id, sku.review_screenshot)
     return "updated" if current else "created"
 
 

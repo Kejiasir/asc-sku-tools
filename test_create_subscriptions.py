@@ -261,5 +261,113 @@ class VersionBumpTests(unittest.TestCase):
         self.assertEqual(bump("1.9.9"), "2.0.0")
 
 
+class AscPricingParseTests(unittest.TestCase):
+    def test_current_usa_price_from_included_point(self) -> None:
+        from create_subscriptions import current_usa_customer_price
+
+        prices = [
+            {
+                "attributes": {"startDate": "2024-01-01"},
+                "relationships": {
+                    "territory": {"data": {"id": "USA"}},
+                    "subscriptionPricePoint": {"data": {"id": "pp-1"}},
+                },
+            },
+            {
+                "attributes": {"startDate": "2099-01-01"},
+                "relationships": {
+                    "territory": {"data": {"id": "USA"}},
+                    "subscriptionPricePoint": {"data": {"id": "pp-future"}},
+                },
+            },
+        ]
+        included = {
+            "pp-1": {"attributes": {"customerPrice": "4.99"}},
+            "pp-future": {"attributes": {"customerPrice": "9.99"}},
+        }
+        self.assertEqual(
+            current_usa_customer_price(prices, included, today="2026-08-20"),
+            "4.99",
+        )
+
+    def test_current_usa_intro_free_trial(self) -> None:
+        from create_subscriptions import current_usa_intro
+
+        offers = [
+            {
+                "attributes": {
+                    "offerMode": "FREE_TRIAL",
+                    "duration": "THREE_DAYS",
+                    "numberOfPeriods": 1,
+                },
+                "relationships": {"territory": {"data": {"id": "USA"}}},
+            }
+        ]
+        intro = current_usa_intro(offers, {}, today="2026-08-20")
+        self.assertEqual(
+            intro,
+            {"mode": "FREE_TRIAL", "duration": "THREE_DAYS", "number_of_periods": 1},
+        )
+
+    def test_merge_overwrites_placeholder_price_and_intro(self) -> None:
+        from create_subscriptions import merge_local_sku_with_asc, sku_dict_from_asc_row
+
+        local = {
+            "product_id": "dj.week.1.0",
+            "reference_name": "old",
+            "period": "ONE_WEEK",
+            "usd_price": "0.99",
+            "group_level": 1,
+        }
+        row = {
+            "product": "dj.week.1.0",
+            "name": "vip-week-1.0-无试用",
+            "period": "ONE_WEEK",
+            "level": "1",
+            "state": "READY_TO_SUBMIT",
+            "pricing": {
+                "usd_price": "4.99",
+                "intro": {"mode": "FREE_TRIAL", "duration": "THREE_DAYS", "number_of_periods": 1},
+            },
+        }
+        merged = merge_local_sku_with_asc(local, row)
+        self.assertEqual(merged["usd_price"], "4.99")
+        self.assertEqual(merged["state"], "READY_TO_SUBMIT")
+        self.assertEqual(merged["intro"]["mode"], "FREE_TRIAL")
+        created = sku_dict_from_asc_row(row)
+        self.assertEqual(created["usd_price"], "4.99")
+        self.assertNotEqual(created["usd_price"], "0.99")
+
+
+class ReviewScreenshotTests(unittest.TestCase):
+    def test_reserve_and_commit_payloads(self) -> None:
+        from create_subscriptions import (
+            file_md5,
+            review_screenshot_commit_payload,
+            review_screenshot_reserve_payload,
+        )
+
+        reserved = review_screenshot_reserve_payload("sub-1", "shot.png", 12)
+        self.assertEqual(reserved["data"]["type"], "subscriptionAppStoreReviewScreenshots")
+        self.assertEqual(reserved["data"]["attributes"]["fileName"], "shot.png")
+        self.assertEqual(reserved["data"]["relationships"]["subscription"]["data"]["id"], "sub-1")
+        checksum = file_md5(b"hello")
+        commit = review_screenshot_commit_payload("shot-1", checksum)
+        self.assertTrue(commit["data"]["attributes"]["uploaded"])
+        self.assertEqual(commit["data"]["attributes"]["sourceFileChecksum"], checksum)
+
+    def test_store_review_screenshot_copies_png(self) -> None:
+        from create_subscriptions import store_review_screenshot
+
+        with tempfile.TemporaryDirectory() as raw:
+            source = Path(raw) / "source.png"
+            source.write_bytes(b"png-bytes")
+            stored = store_review_screenshot("dj.month.1.0", str(source), directory=Path(raw))
+            dest = Path(stored)
+            self.assertTrue(dest.is_file())
+            self.assertEqual(dest.name, "dj.month.1.0.png")
+            self.assertEqual(dest.read_bytes(), b"png-bytes")
+
+
 if __name__ == "__main__":
     unittest.main()

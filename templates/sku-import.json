@@ -1,0 +1,40 @@
+{
+  "format": "asc-sku.subscriptions",
+  "version": 1,
+  "subscriptions": [
+    {
+      "product_id": "dj.week.1.0",
+      "reference_name": "vip-week-1.0-无试用",
+      "period": "ONE_WEEK",
+      "usd_price": "6.99",
+      "group_level": 1,
+      "review_note": "周订阅，无推介优惠"
+    },
+    {
+      "product_id": "dj.month.1.1",
+      "reference_name": "vip-month-1.1-前三天免费",
+      "period": "ONE_MONTH",
+      "usd_price": "29.99",
+      "group_level": 2,
+      "intro": {
+        "mode": "FREE_TRIAL",
+        "duration": "THREE_DAYS",
+        "number_of_periods": 1
+      },
+      "review_note": "月订阅，前三天免费"
+    },
+    {
+      "product_id": "dj.month.1.2",
+      "reference_name": "vip-month-1.2-随用随付",
+      "period": "ONE_MONTH",
+      "usd_price": "29.99",
+      "group_level": 3,
+      "intro": {
+        "mode": "PAY_AS_YOU_GO",
+        "duration": "ONE_MONTH",
+        "number_of_periods": 2,
+        "usd_price": "0.99"
+      }
+    }
+  ]
+}

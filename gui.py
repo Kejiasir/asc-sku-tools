@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 import customtkinter as ctk
 
+from sku_io import dump_skus, load_skus, merge_skus, write_excel_template, write_json_template
 from create_subscriptions import (
     ASCClient,
     ASCError,
@@ -393,6 +394,31 @@ class FormDialog(ctk.CTkToplevel):
             else:
                 hint_kwargs["text"] = hint or ""
             ctk.CTkLabel(parent, **hint_kwargs).grid(row=hint_row, column=1, sticky="ew", pady=(0, 6))
+
+
+class ActionDialog(FormDialog):
+    def __init__(self, master: tk.Misc, title: str, hint: str, actions: tuple[tuple[str, str], ...]) -> None:
+        height = 160 + 42 * (len(actions) + 1)
+        super().__init__(master, title, f"440x{height}")
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=20, pady=16)
+        ctk.CTkLabel(body, text=hint, text_color=MUTED, wraplength=400, justify="left", anchor="w").pack(fill="x", pady=(0, 12))
+        for text, action in actions:
+            ctk.CTkButton(
+                body,
+                text=text,
+                height=34,
+                fg_color=ACCENT,
+                hover_color=ACCENT_HOVER,
+                command=lambda value=action: self._choose(value),
+            ).pack(fill="x", pady=4)
+        ctk.CTkButton(body, text="取消", height=34, fg_color="#3A3A3C", hover_color="#48484A", command=self.destroy).pack(
+            fill="x", pady=(8, 0)
+        )
+
+    def _choose(self, action: str) -> None:
+        self.result = {"action": action}
+        self.destroy()
 
 
 class SKUDialog(FormDialog):
@@ -1063,10 +1089,13 @@ class App:
             ("删除", self._delete_sku),
             ("生成矩阵", self._generate_matrix),
             ("从 ASC 同步", self._sync_skus),
+            ("导入", self._import_skus),
+            ("导出", self._export_skus),
+            ("下载模板", self._download_sku_template),
         ):
-            color = DANGER if text == "删除" else ACCENT if text in {"新增", "生成矩阵"} else "#3A3A3C"
-            hover = "#FF6961" if text == "删除" else ACCENT_HOVER if text in {"新增", "生成矩阵"} else "#48484A"
-            ctk.CTkButton(sku_bar, text=text, width=92, height=30, fg_color=color, hover_color=hover, command=command).pack(
+            color = DANGER if text == "删除" else ACCENT if text in {"新增", "生成矩阵", "导入"} else "#3A3A3C"
+            hover = "#FF6961" if text == "删除" else ACCENT_HOVER if text in {"新增", "生成矩阵", "导入"} else "#48484A"
+            ctk.CTkButton(sku_bar, text=text, width=86, height=30, fg_color=color, hover_color=hover, command=command).pack(
                 side="left", padx=(0, 6)
             )
         columns = ("group_level", "reference_name", "product_id", "period", "usd_price", "intro", "state")
@@ -1448,6 +1477,141 @@ class App:
             return
         del self.skus[index]
         self._refresh_tree()
+
+    def _choose_exchange_path(self, *, title: str, suffix: str, initialfile: str) -> Path | None:
+        filetypes = [("JSON", "*.json")] if suffix == ".json" else [("Excel", "*.xlsx")]
+        chosen = filedialog.asksaveasfilename(
+            title=title,
+            defaultextension=suffix,
+            initialfile=initialfile,
+            filetypes=filetypes,
+        )
+        if not chosen:
+            return None
+        path = Path(chosen)
+        if path.suffix.lower() != suffix:
+            path = path.with_suffix(suffix)
+        return path
+
+    def _hydrate_imported_screenshots(self, skus: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        hydrated: list[dict[str, Any]] = []
+        for sku in skus:
+            shot = str(sku.get("review_screenshot") or "").strip()
+            if not shot:
+                hydrated.append(sku)
+                continue
+            source = Path(shot).expanduser()
+            if not source.is_file():
+                hydrated.append(sku)
+                continue
+            copied = dict(sku)
+            try:
+                copied["review_screenshot"] = store_review_screenshot(str(sku.get("product_id", "")), str(source))
+            except ASCError:
+                pass
+            hydrated.append(copied)
+        return hydrated
+
+    def _import_skus(self) -> None:
+        chosen = filedialog.askopenfilename(
+            title="导入 SKU",
+            filetypes=[
+                ("SKU 文件", "*.json *.xlsx"),
+                ("JSON", "*.json"),
+                ("Excel", "*.xlsx"),
+            ],
+        )
+        if not chosen:
+            return
+        path = Path(chosen)
+        try:
+            incoming = self._hydrate_imported_screenshots(load_skus(path))
+        except ASCError as error:
+            messagebox.showerror("导入失败", str(error))
+            return
+        if not incoming:
+            messagebox.showinfo("导入", "文件里没有 SKU。")
+            return
+        replace = False
+        if self.skus:
+            answer = messagebox.askyesnocancel(
+                "导入 SKU",
+                f"将导入 {len(incoming)} 个 SKU。\n\n"
+                "是：按产品 ID 合并（已有的覆盖，新的追加）\n"
+                "否：清空当前列表后全部替换\n"
+                "取消：不导入",
+                parent=self.root,
+            )
+            if answer is None:
+                return
+            replace = not answer
+        merged, added, updated = merge_skus(self.skus, incoming, replace=replace)
+        self.skus = merged
+        self._refresh_tree()
+        if replace:
+            self._append_log(f"已从 {path.name} 替换导入 {len(merged)} 个 SKU。检查列表后即可发布到 ASC。\n")
+        else:
+            self._append_log(
+                f"已从 {path.name} 导入 SKU：新增 {added}，覆盖 {updated}。检查列表后即可发布到 ASC。\n"
+            )
+
+    def _export_skus(self) -> None:
+        if not self.skus:
+            messagebox.showinfo("导出", "当前没有 SKU 可导出。")
+            return
+        dialog = ActionDialog(
+            self.root,
+            "导出 SKU",
+            "导出格式与导入相同，可再导入后发布。从 ASC 同步下来的 SKU 也会一并导出。",
+            (("导出 JSON", "json"), ("导出 Excel", "excel")),
+        )
+        self.root.wait_window(dialog)
+        if not dialog.result:
+            return
+        kind = dialog.result["action"]
+        suffix = ".json" if kind == "json" else ".xlsx"
+        path = self._choose_exchange_path(
+            title="导出 SKU",
+            suffix=suffix,
+            initialfile=f"skus{suffix}",
+        )
+        if path is None:
+            return
+        try:
+            dump_skus(self.skus, path)
+        except (ASCError, OSError) as error:
+            messagebox.showerror("导出失败", str(error))
+            return
+        self._append_log(f"已导出 {len(self.skus)} 个 SKU 到 {path}\n")
+
+    def _download_sku_template(self) -> None:
+        dialog = ActionDialog(
+            self.root,
+            "下载导入模板",
+            "模板已含示例数据。改成你的产品 ID、价格和推介优惠后，点「导入」，再点「发布到 ASC」。",
+            (("JSON 模板", "json"), ("Excel 模板", "excel")),
+        )
+        self.root.wait_window(dialog)
+        if not dialog.result:
+            return
+        kind = dialog.result["action"]
+        suffix = ".json" if kind == "json" else ".xlsx"
+        path = self._choose_exchange_path(
+            title="保存导入模板",
+            suffix=suffix,
+            initialfile=f"sku-import-template{suffix}",
+        )
+        if path is None:
+            return
+        try:
+            if kind == "json":
+                write_json_template(path)
+            else:
+                write_excel_template(path)
+        except (ASCError, OSError) as error:
+            messagebox.showerror("模板", str(error))
+            return
+        self._append_log(f"已保存导入模板：{path}\n")
 
     def _sync_skus(self) -> None:
         if self.client is None or not self.group_id.get().strip():
